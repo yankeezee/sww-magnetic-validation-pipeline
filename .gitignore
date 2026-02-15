@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# env
+.venv/
+.env/
+*.conda
+*.egg-info/
+
+# data / outputs
+outputs/
+reports/
+validated_structures/
+rejected_structures/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
