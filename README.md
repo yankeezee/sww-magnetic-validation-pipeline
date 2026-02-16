@@ -78,6 +78,8 @@ mvp validate \
   --out-dir outputs/mattergen \
   --train-reference train_reference.csv
 
+  Примечание: валидатор рекурсивно читает все *.cif внутри --input-dir.
+  Уникальный идентификатор структуры формируется как относительный путь файла относительно --input-dir.
 ---
 
 ## 5. Ожидаемый результат
