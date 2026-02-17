@@ -9,6 +9,7 @@ __pycache__/
 .env/
 *.conda
 *.egg-info/
+mvpipeline_env/
 
 # data / outputs
 outputs/
@@ -20,3 +21,4 @@ rejected_structures/
 # OS
 .DS_Store
 Thumbs.db
+.qoder

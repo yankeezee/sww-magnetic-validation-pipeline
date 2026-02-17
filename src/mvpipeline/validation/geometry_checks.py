@@ -1,128 +1,79 @@
-# src/mvpipeline/validation/geometry_checks.py
-
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, Any, List
-
+from typing import Dict, Optional, Tuple, Any
 import numpy as np
 from pymatgen.core import Structure
-from pymatgen.analysis.local_env import CrystalNN
-
 
 @dataclass(frozen=True)
 class GeometryThresholds:
     """
-    Пороги можно подобрать позже. Сейчас — безопасные дефолты для первичной фильтрации.
+    Пороги из ТЗ (PDF). 
+    Программист 1 позже может вынести это в загрузку из YAML.
     """
-    min_interatomic_distance: float = 1.0   # Å: грубый фильтр перекрытий
-    min_volume_per_atom: float = 5.0        # Å^3/atom: слишком маленький объём на атом обычно подозрителен
-    max_volume_per_atom: float = 60.0       # Å^3/atom: слишком большой объём на атом тоже подозрителен
-    min_density: float = 0.5                # g/cm^3
-    max_density: float = 30.0               # g/cm^3
-    max_n_atoms: int = 500                  # чтобы не взрывать время/память на странных огромных ячейках
+    # Расстояния
+    dist_impossible: float = 0.7      # < 0.7 Å — физически невозможно (Reject)
+    dist_overlap: float = 1.0         # < 1.0 Å — почти всегда перекрытие (Reject)
+    dist_suspicious: float = 1.2      # < 1.2 Å — подозрительно (Suspicious)
+    
+    # Объемы (Å³/atom)
+    vpa_too_small: float = 5.0        # < 5 — вырожденная решетка (Reject)
+    vpa_min: float = 8.0              # 8-40 — норма (PDF стр. 3)
+    vpa_max: float = 40.0             
+    vpa_impossible: float = 80.0      # > 80 — нестабильная (Reject)
 
-
-def basic_stats(struct: Structure) -> Dict[str, float]:
-    """
-    Базовые геометрические/физические величины, которые почти всегда нужны в отчёте.
-    """
-    n_atoms = len(struct)
-    vol = float(struct.volume)
-    vpa = float(vol / n_atoms) if n_atoms > 0 else float("nan")
-
-    # pymatgen.Structure.density -> g/cm^3 (в большинстве версий pymatgen)
-    try:
-        density = float(struct.density)
-    except Exception:
-        density = float("nan")
-
-    lattice = struct.lattice
-    return {
-        "n_atoms": float(n_atoms),
-        "volume": vol,
-        "volume_per_atom": vpa,
-        "density": density,
-        "a": float(lattice.a),
-        "b": float(lattice.b),
-        "c": float(lattice.c),
-        "alpha": float(lattice.alpha),
-        "beta": float(lattice.beta),
-        "gamma": float(lattice.gamma),
-    }
+    # Плотность (g/cm³)
+    density_min: float = 0.5          # < 0.5 — нереалистично
+    density_max: float = 30.0         # > 30 — нереалистично
 
 
 def min_distance(struct: Structure) -> float:
-    """
-    Минимальная межатомная дистанция в ячейке (учитывая PBC).
-    Для n_atoms>~500 это может быть тяжело, но для ваших 200–1000 CIF нормально.
-    """
-    if len(struct) < 2:
-        return float("inf")
-
-    dm = struct.distance_matrix  # NxN
-    # исключаем диагональ
+    """Расчет мин. расстояния с учетом периодических условий (PBC)."""
+    if len(struct) < 2: return float("inf")
+    # distance_matrix в pymatgen уже учитывает PBC
+    dm = struct.distance_matrix
     dm = dm + np.eye(dm.shape[0]) * 1e9
     return float(np.min(dm))
 
-
-def check_lattice_sanity(struct: Structure, thr: GeometryThresholds) -> Tuple[bool, Optional[str], Dict[str, Any]]:
+def geometry_validate(struct: Structure, thr: GeometryThresholds) -> Tuple[str, Dict[str, Any]]:
     """
-    Быстрые проверки: число атомов, объём/атом, плотность.
+    Основная логика валидации 1-го дня.
+    Возвращает: (status, info)
+    Status: 'validated', 'rejected', 'suspicious'
     """
-    info = basic_stats(struct)
-
-    n_atoms = int(info["n_atoms"])
-    if n_atoms <= 0:
-        return False, "empty_structure", info
-    if n_atoms > thr.max_n_atoms:
-        return False, "too_many_atoms", info
-
-    vpa = info["volume_per_atom"]
-    if not np.isfinite(vpa) or vpa < thr.min_volume_per_atom:
-        return False, "too_small_volume_per_atom", info
-    if vpa > thr.max_volume_per_atom:
-        return False, "too_large_volume_per_atom", info
-
-    dens = info["density"]
-    if np.isfinite(dens):
-        if dens < thr.min_density:
-            return False, "too_low_density", info
-        if dens > thr.max_density:
-            return False, "too_high_density", info
-
-    return True, None, info
-
-
-def check_overlaps(struct: Structure, thr: GeometryThresholds) -> Tuple[bool, Optional[str], Dict[str, Any]]:
-    """
-    Грубая проверка перекрытий: минимальная дистанция.
-    """
+    n_atoms = len(struct)
+    vol = float(struct.volume)
+    vpa = vol / n_atoms if n_atoms > 0 else 0
+    dens = float(struct.density)
     dmin = min_distance(struct)
-    info = {"min_distance": dmin}
 
-    if not np.isfinite(dmin):
-        return False, "distance_nan", info
-    if dmin < thr.min_interatomic_distance:
-        return False, "overlap", info
+    info = {
+        "n_atoms": n_atoms,
+        "volume_per_atom": round(vpa, 3),
+        "density": round(dens, 3),
+        "min_distance": round(dmin, 3),
+        "formula": struct.composition.reduced_formula
+    }
 
-    return True, None, info
+    # 1. Проверка на пустую структуру
+    if n_atoms == 0:
+        return "rejected", {**info, "reason": "empty_structure"}
 
+    # 2. Валидация расстояний (PDF стр. 1)
+    if dmin < thr.dist_impossible:
+        return "rejected", {**info, "reason": f"physically_impossible_distance (<{thr.dist_impossible})"}
+    if dmin < thr.dist_overlap:
+        return "rejected", {**info, "reason": f"atomic_overlap (<{thr.dist_overlap})"}
+    
+    # 3. Валидация объема (PDF стр. 2)
+    if vpa < thr.vpa_too_small:
+        return "rejected", {**info, "reason": "degenerate_lattice_volume"}
+    if vpa > thr.vpa_impossible:
+        return "rejected", {**info, "reason": "too_large_unstable_volume"}
 
-def geometry_validate(struct: Structure, thr: GeometryThresholds) -> Tuple[bool, Optional[str], Dict[str, Any]]:
-    """
-    Единая точка входа: возвращает (ok, reason, details).
-    reason заполняется только если ok=False.
-    """
-    ok, reason, info1 = check_lattice_sanity(struct, thr)
-    if not ok:
-        return False, reason, info1
+    # 4. Категория Suspicious (Подозрительно)
+    if dmin < thr.dist_suspicious:
+        return "suspicious", {**info, "reason": "low_interatomic_distance"}
+    if vpa < thr.vpa_min or vpa > thr.vpa_max:
+        return "suspicious", {**info, "reason": "non_standard_vpa"}
 
-    ok, reason, info2 = check_overlaps(struct, thr)
-    if not ok:
-        details = {**info1, **info2}
-        return False, reason, details
-
-    # Объединяем детали успешных чеков
-    details = {**info1, **info2}
-    return True, None, details
+    return "validated", info
