@@ -1,8 +1,8 @@
 from pymatgen.core import Structure
+from ..config import PipelineConfig
 
-MAGNETIC_ELEMENTS = {"Fe", "Co", "Ni", "Mn", "Cr", "V"}
 
-def has_magnetic_elements(struct: Structure) -> bool:
+def has_magnetic_elements(struct: Structure, config: PipelineConfig) -> bool:
     """Проверяет, содержит ли структура элементы из списка магнитных."""
     elements = {site.specie.symbol for site in struct}
-    return not elements.isdisjoint(MAGNETIC_ELEMENTS)
+    return not elements.isdisjoint(config.magnetic_elements)

@@ -1,6 +1,6 @@
-import pandas as pd
 from pymatgen.analysis.structure_matcher import StructureMatcher
 from pymatgen.core import Structure
+
 
 class SimilarityChecker:
     def __init__(self):
@@ -14,11 +14,11 @@ class SimilarityChecker:
         Сравнивает структуру только с теми, у кого такая же формула и SG.
         """
         key = (formula, sg)
-        
+
         # Если такого сочетания еще не было, это точно не дубликат
         if key not in self._buckets:
             return False
-            
+
         # Сравниваем только внутри бакета (ТЗ: сравнение по формуле и SG)
         for existing in self._buckets[key]:
             if self.matcher.fit(struct, existing):
@@ -31,18 +31,3 @@ class SimilarityChecker:
         if key not in self._buckets:
             self._buckets[key] = []
         self._buckets[key].append(struct)
-
-def is_novel(struct: Structure, reference_df: pd.DataFrame) -> bool:
-    """Проверяет новизну относительно train_reference.csv."""
-    if reference_df is None or reference_df.empty:
-        return True
-    
-    formula = struct.composition.reduced_formula
-    sg_number = struct.get_space_group_info()[1]
-    
-    # Ищем совпадение по формуле и spacegroup
-    match = reference_df[
-        (reference_df['reduced_formula'] == formula) & 
-        (reference_df['spacegroup'].astype(str) == str(sg_number))
-    ]
-    return match.empty
