@@ -77,6 +77,7 @@ mvp validate \
   --input-dir samples/mattergen_cifs \
   --out-dir outputs/mattergen \
   --train-reference train_reference.csv
+  --thresholds config/thresholds.yaml
 
   Примечание: валидатор рекурсивно читает все *.cif внутри --input-dir.
   Уникальный идентификатор структуры формируется как относительный путь файла относительно --input-dir.

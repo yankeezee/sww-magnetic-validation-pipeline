@@ -142,21 +142,21 @@ def geometry_validate(struct: Structure, cfg: PipelineConfig) -> GeometryOutcome
         )
 
     # нереалистичная плотность → reject
-    if dens < cfg.density_min or dens > cfg.density_max:
+    if dens < cfg.min_density or dens > cfg.max_density:
         return GeometryOutcome(
             status=ValidationStatus.REJECTED,
             is_suspicious=False,
             reason=RejectionReason.UNREALISTIC_DENSITY,
             details={
                 **details,
-                "density_min": cfg.density_min,
-                "density_max": cfg.density_max,
+                "density_min": cfg.min_density,
+                "density_max": cfg.max_density,
             },
         )
 
     # suspicious структура (но не reject)
     suspicious = (
-        (dmin < cfg.d_max_suspicious) or (vpa < cfg.vpa_min) or (vpa > cfg.vpa_max)
+        (dmin < cfg.d_max_suspicious) or (vpa < cfg.vol_min) or (vpa > cfg.vol_max)
     )
 
     # записываем причину suspicious для анализа
