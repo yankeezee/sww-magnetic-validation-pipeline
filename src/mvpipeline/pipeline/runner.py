@@ -33,14 +33,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-import pandas as pd
 from pymatgen.core import Structure
 
 from ..analysis import compute_basic_descriptors, get_spacegroup_number
 from ..dedup import SimilarityChecker
 from ..io import discover_cifs, read_structure, write_rejected, write_validated
-from ..novelty import is_novel
-from ..report import write_records_csv
+from ..novelty import load_train_reference, is_novel
+from ..report import BufferedCSVWriter
 from ..utils import (
     PipelineConfig,
     Rejection,
@@ -94,9 +93,6 @@ class RunStats:
     # причины отклонения (словарь: причина -> сколько раз)
     rejection_reasons: Dict[str, int] = field(default_factory=dict)
 
-    # Общая таблица для анализа (all_structures.csv)
-    records_rows: list[dict[str, Any]] = field(default_factory=list)
-
     def add_rejection_reason(self, reason: RejectionReason) -> None:
         """
         Увеличивает счетчик конкретной причины отклонения.
@@ -108,36 +104,6 @@ class RunStats:
 
         key = reason.value
         self.rejection_reasons[key] = self.rejection_reasons.get(key, 0) + 1
-
-
-# =============================================================================
-# Вспомогательная функция: загрузка train_reference.csv
-# =============================================================================
-
-
-def _load_train_reference(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    """
-    Загружает train_reference.csv, если он существует.
-
-    Этот файл нужен для проверки новизны структуры.
-    """
-
-    if path is None:
-        return None
-
-    if not path.exists():
-        return None
-
-    df = pd.read_csv(path)
-
-    # приводим к строкам, чтобы сравнение работало корректно
-    if "reduced_formula" in df.columns:
-        df["reduced_formula"] = df["reduced_formula"].astype(str)
-
-    if "spacegroup" in df.columns:
-        df["spacegroup"] = df["spacegroup"].astype(str)
-
-    return df
 
 
 # =============================================================================
@@ -161,6 +127,25 @@ def _avg(values: list[float]) -> float:
 # =============================================================================
 # Вспомогательная функция: формирование записи для общего CSV
 # =============================================================================
+
+RECORDS_FIELDS = [
+    "structure_id",
+    "input_path",
+    "status",
+    "rejection_reason",
+    "is_suspicious",
+    "is_duplicate",
+    "is_novel",
+    "is_magnetic",
+    "n_atoms",
+    "density",
+    "volume_per_atom",
+    "reduced_formula",
+    "spacegroup",
+    "min_distance",
+    "charge_solution_json",
+    "details_json",
+]
 
 
 def _make_record(
@@ -205,7 +190,7 @@ def _make_record(
           положить в details_json, не ломая схему CSV.
 
     Возвращает:
-        dict[str, Any] — готовую запись (строку) для добавления в общий список records_rows.
+        dict[str, Any] — готовую запись (строку) для добавления.
     """
     desc = result.descriptors
 
@@ -255,6 +240,32 @@ def _make_record(
     return record
 
 
+def _emit_record(
+    *,
+    writer: Any,
+    item: Any,
+    result: ValidationResult,
+    geo_details: Optional[Dict[str, Any]] = None,
+    charge_solution: Optional[Dict[str, int]] = None,
+) -> None:
+    """
+    Добавляет одну строку в all_structures.csv.
+
+    Важно:
+        Вызываем для ВСЕХ структур:
+          - validated
+          - rejected (parse/sanity/geometry/charge/duplicate/...)
+    """
+    writer.add(
+        _make_record(
+            item=item,
+            result=result,
+            geo_details=geo_details,
+            charge_solution=charge_solution,
+        )
+    )
+
+
 # =============================================================================
 # Главная функция pipeline
 # =============================================================================
@@ -290,11 +301,18 @@ def run_validation(
     # создаем папку результатов
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    records_path = out_dir / "all_structures.csv"
+    records_writer = BufferedCSVWriter(
+        path=records_path,
+        fieldnames=RECORDS_FIELDS,
+        flush_every=500,
+    )
+
     # находим все CIF файлы
     items = discover_cifs(input_dir)
 
     # загружаем train_reference.csv
-    reference_df = _load_train_reference(train_reference)
+    reference = load_train_reference(train_reference)
 
     # создаем объект статистики
     stats = RunStats(total=len(items))
@@ -305,182 +323,205 @@ def run_validation(
     # =========================================================================
     # Главный цикл — обрабатываем каждый CIF
     # =========================================================================
+    try:
+        for item in items:
 
-    for item in items:
+            # ------------------------------------------------------------
+            # 1. Читаем CIF
+            # ------------------------------------------------------------
 
-        # ------------------------------------------------------------
-        # 1. Читаем CIF
-        # ------------------------------------------------------------
+            try:
+                struct: Structure = read_structure(item.path)
 
-        try:
-            struct: Structure = read_structure(item.path)
+            except Exception as e:
+                # если CIF не читается — отклоняем
 
-        except Exception as e:
-            # если CIF не читается — отклоняем
+                result = ValidationResult(
+                    status=ValidationStatus.REJECTED,
+                    rejection=Rejection(
+                        reason=RejectionReason.CIF_PARSE_ERROR,
+                        details={"error": str(e)},
+                    ),
+                )
 
-            result = ValidationResult(
-                status=ValidationStatus.REJECTED,
-                rejection=Rejection(
-                    reason=RejectionReason.CIF_PARSE_ERROR,
-                    details={"error": str(e)},
-                ),
+                _emit_record(writer=records_writer, item=item, result=result)
+                write_rejected(item, out_dir, result)
+
+                stats.rejected += 1
+                stats.add_rejection_reason(RejectionReason.CIF_PARSE_ERROR)
+
+                continue
+
+            # ------------------------------------------------------------
+            # 2. sanity проверка
+            # ------------------------------------------------------------
+
+            if not sanity_ok(struct):
+
+                result = ValidationResult(
+                    status=ValidationStatus.REJECTED,
+                    rejection=Rejection(
+                        reason=RejectionReason.CIF_SANITY_ERROR,
+                        details={"error": "sanity_failed"},
+                    ),
+                )
+
+                _emit_record(writer=records_writer, item=item, result=result)
+                write_rejected(item, out_dir, result)
+
+                stats.rejected += 1
+                stats.add_rejection_reason(RejectionReason.CIF_SANITY_ERROR)
+
+                continue
+
+            # ------------------------------------------------------------
+            # 3. определяем spacegroup
+            # ------------------------------------------------------------
+
+            sg = get_spacegroup_number(struct, cfg.symprec)
+
+            # ------------------------------------------------------------
+            # 4. считаем дескрипторы
+            # ------------------------------------------------------------
+
+            desc = compute_basic_descriptors(struct, sg)
+
+            # ------------------------------------------------------------
+            # 5. проверяем геометрию
+            # ------------------------------------------------------------
+
+            geo = geometry_validate(struct, cfg)
+
+            if geo.status == ValidationStatus.REJECTED:
+
+                result = ValidationResult(
+                    status=ValidationStatus.REJECTED,
+                    descriptors=desc,
+                    rejection=Rejection(geo.reason, geo.details),
+                )
+
+                _emit_record(
+                    writer=records_writer,
+                    item=item,
+                    result=result,
+                    geo_details=geo.details,
+                )
+                write_rejected(item, out_dir, result)
+
+                stats.rejected += 1
+                stats.add_rejection_reason(geo.reason)
+
+                continue
+
+            # ------------------------------------------------------------
+            # 6. проверяем заряд
+            # ------------------------------------------------------------
+
+            charge = check_charge_neutrality(struct, cfg)
+
+            if not charge.ok:
+
+                result = ValidationResult(
+                    status=ValidationStatus.REJECTED,
+                    descriptors=desc,
+                    rejection=Rejection(charge.reason, charge.details),
+                )
+
+                _emit_record(
+                    writer=records_writer,
+                    item=item,
+                    result=result,
+                    geo_details=geo.details,
+                )
+                write_rejected(item, out_dir, result)
+
+                stats.rejected += 1
+                stats.add_rejection_reason(charge.reason)
+
+                continue
+
+            # ------------------------------------------------------------
+            # 7. проверяем новизну
+            # ------------------------------------------------------------
+
+            novel = is_novel(
+                struct,
+                reference,
+                reduced_formula=desc.reduced_formula,
+                spacegroup=desc.spacegroup,
             )
 
-            write_rejected(item, out_dir, result)
+            # ------------------------------------------------------------
+            # 8. проверяем дубликаты
+            # ------------------------------------------------------------
 
-            stats.rejected += 1
-            stats.add_rejection_reason(RejectionReason.CIF_PARSE_ERROR)
+            formula = desc.reduced_formula
+            sg_key = desc.spacegroup or -1
 
-            continue
+            if sim_checker.is_duplicate(struct, formula, sg_key):
 
-        # ------------------------------------------------------------
-        # 2. sanity проверка
-        # ------------------------------------------------------------
+                result = ValidationResult(
+                    status=ValidationStatus.REJECTED,
+                    descriptors=desc,
+                    rejection=Rejection(RejectionReason.DUPLICATE),
+                )
 
-        if not sanity_ok(struct):
+                _emit_record(
+                    writer=records_writer,
+                    item=item,
+                    result=result,
+                    geo_details=geo.details,
+                    charge_solution=charge.solution,
+                )
+                write_rejected(item, out_dir, result)
 
-            result = ValidationResult(
-                status=ValidationStatus.REJECTED,
-                rejection=Rejection(
-                    reason=RejectionReason.CIF_SANITY_ERROR,
-                    details={"error": "sanity_failed"},
-                ),
-            )
+                stats.rejected += 1
+                stats.add_rejection_reason(RejectionReason.DUPLICATE)
 
-            write_rejected(item, out_dir, result)
+                continue
 
-            stats.rejected += 1
-            stats.add_rejection_reason(RejectionReason.CIF_SANITY_ERROR)
+            sim_checker.add_to_accepted(struct, formula, sg_key)
 
-            continue
+            # ------------------------------------------------------------
+            # 9. проверяем магнитность
+            # ------------------------------------------------------------
 
-        # ------------------------------------------------------------
-        # 3. определяем spacegroup
-        # ------------------------------------------------------------
+            magnetic = has_magnetic_elements(struct, cfg)
 
-        sg = get_spacegroup_number(struct, cfg.symprec)
-
-        # ------------------------------------------------------------
-        # 4. считаем дескрипторы
-        # ------------------------------------------------------------
-
-        desc = compute_basic_descriptors(struct, sg)
-
-        # ------------------------------------------------------------
-        # 5. проверяем геометрию
-        # ------------------------------------------------------------
-
-        geo = geometry_validate(struct, cfg)
-
-        if geo.status == ValidationStatus.REJECTED:
+            # ------------------------------------------------------------
+            # 10. структура валидна — сохраняем
+            # ------------------------------------------------------------
 
             result = ValidationResult(
-                status=ValidationStatus.REJECTED,
+                status=ValidationStatus.VALIDATED,
                 descriptors=desc,
-                rejection=Rejection(geo.reason, geo.details),
+                is_magnetic=magnetic,
+                is_novel=novel,
             )
 
-            write_rejected(item, out_dir, result)
-
-            stats.rejected += 1
-            stats.add_rejection_reason(geo.reason)
-
-            continue
-
-        # ------------------------------------------------------------
-        # 6. проверяем заряд
-        # ------------------------------------------------------------
-
-        charge = check_charge_neutrality(struct, cfg)
-
-        if not charge.ok:
-
-            result = ValidationResult(
-                status=ValidationStatus.REJECTED,
-                descriptors=desc,
-                rejection=Rejection(charge.reason, charge.details),
-            )
-
-            write_rejected(item, out_dir, result)
-
-            stats.rejected += 1
-            stats.add_rejection_reason(charge.reason)
-
-            continue
-
-        # ------------------------------------------------------------
-        # 7. проверяем новизну
-        # ------------------------------------------------------------
-
-        novel = is_novel(struct, reference_df) if reference_df is not None else None
-
-        # ------------------------------------------------------------
-        # 8. проверяем дубликаты
-        # ------------------------------------------------------------
-
-        formula = desc.reduced_formula
-        sg_key = desc.spacegroup or -1
-
-        if sim_checker.is_duplicate(struct, formula, sg_key):
-
-            result = ValidationResult(
-                status=ValidationStatus.REJECTED,
-                descriptors=desc,
-                rejection=Rejection(RejectionReason.DUPLICATE),
-            )
-
-            write_rejected(item, out_dir, result)
-
-            stats.rejected += 1
-            stats.add_rejection_reason(RejectionReason.DUPLICATE)
-
-            continue
-
-        sim_checker.add_to_accepted(struct, formula, sg_key)
-
-        # ------------------------------------------------------------
-        # 9. проверяем магнитность
-        # ------------------------------------------------------------
-
-        magnetic = has_magnetic_elements(struct, cfg)
-
-        # ------------------------------------------------------------
-        # 10. структура валидна — сохраняем
-        # ------------------------------------------------------------
-
-        result = ValidationResult(
-            status=ValidationStatus.VALIDATED,
-            descriptors=desc,
-            is_magnetic=magnetic,
-            is_novel=novel,
-        )
-
-        write_validated(item, out_dir)
-
-        stats.validated += 1
-
-        if magnetic:
-            stats.magnetic_count += 1
-
-        if novel:
-            stats.novel_count += 1
-
-        stats.densities.append(desc.density)
-        stats.vpas.append(desc.volume_per_atom)
-
-        stats.records_rows.append(
-            _make_record(
+            _emit_record(
+                writer=records_writer,
                 item=item,
                 result=result,
                 geo_details=geo.details,
                 charge_solution=charge.solution,
             )
-        )
 
-    # =========================================================================
-    # Сохраняем общий CSV (вся логика внутри report/)
-    # =========================================================================
-    csv_path = write_records_csv(out_dir, stats.records_rows)
+            write_validated(item, out_dir)
+
+            stats.validated += 1
+
+            if magnetic:
+                stats.magnetic_count += 1
+
+            if novel:
+                stats.novel_count += 1
+
+            stats.densities.append(desc.density)
+            stats.vpas.append(desc.volume_per_atom)
+
+    finally:
+        records_writer.close()
 
     # =========================================================================
     # Формируем итоговый отчет
@@ -504,7 +545,7 @@ def run_validation(
         "avg_density": _avg(stats.densities),
         "avg_volume_per_atom": _avg(stats.vpas),
         "rejection_reasons": stats.rejection_reasons,
-        "all_structures_csv": str(csv_path) if csv_path else "",
+        "all_structures_csv": str(records_path),
     }
 
     report_path = out_dir / "validation_report.json"

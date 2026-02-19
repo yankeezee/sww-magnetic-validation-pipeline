@@ -1,23 +1,21 @@
 """
-Novelty module: проверка новизны структур относительно train dataset.
+Novelty module: проверка новизны относительно train dataset.
 
-Этот модуль используется для определения, была ли структура уже в train dataset
-или является новой.
-
-Новизна определяется по паре:
-    (reduced_formula, spacegroup)
-
-Используется для:
-    - вычисления novelty_ratio
-    - анализа качества генеративных моделей
-    - определения способности модели генерировать новые структуры
+Отвечает за:
+    - загрузку train_reference.csv,
+    - быстрый lookup по (reduced_formula, spacegroup),
+    - расчёт флага is_novel (метрика, а не reject).
 
 Публичный API:
+    load_train_reference
     is_novel
 """
 
-from .train_reference import is_novel
+from .train_reference import TrainReferenceIndex, load_train_reference
+from .novelty_check import is_novel  # см. ниже
 
 __all__ = [
+    "TrainReferenceIndex",
+    "load_train_reference",
     "is_novel",
 ]

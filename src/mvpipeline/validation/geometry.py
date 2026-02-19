@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Optional, Dict
 import numpy as np
 from pymatgen.core import Structure
 
@@ -44,7 +44,7 @@ class GeometryOutcome:
     status: ValidationStatus
     is_suspicious: bool
     reason: Optional[RejectionReason]
-    details: dict[str, Any]
+    details: Dict[str, Any]
 
 
 def geometry_validate(struct: Structure, cfg: PipelineConfig) -> GeometryOutcome:

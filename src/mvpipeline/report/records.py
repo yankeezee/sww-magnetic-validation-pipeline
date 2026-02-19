@@ -1,87 +1,107 @@
 from __future__ import annotations
 
 """
-records.py — формирование “общей таблицы” по всем CIF.
+report/records.py — запись общего CSV со всеми структурами: all_structures.csv.
 
 Задача:
-    - собрать все результаты в один CSV, где одна строка = один CIF
-    - сохранить поля, нужные для дальнейшего анализа
-    - не терять детали (кладём details_json)
+    - собрать единую таблицу (для анализа в pandas / jupyter / excel)
+    - писать эффективно: буфером, сбрасывая на диск каждые N строк
 
 Публичный API:
-    write_records_csv
+    BufferedCSVWriter
 """
 
+import csv
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import pandas as pd
+
+DEFAULT_RECORDS_FILENAME = "all_structures.csv"
 
 
-# Единый порядок колонок (чтобы CSV был стабильный и удобный)
-_COLUMNS = [
-    "structure_id",
-    "input_path",
-    "status",
-    "rejection_reason",
-    "is_suspicious",
-    "is_duplicate",
-    "is_novel",
-    "is_magnetic",
-    "n_atoms",
-    "density",
-    "volume_per_atom",
-    "min_distance",
-    "reduced_formula",
-    "spacegroup",
-    "charge_solution_json",
-    "details_json",
-]
+def _ensure_parent(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _normalize_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+@dataclass
+class BufferedCSVWriter:
     """
-    Приводит record к стабильному виду:
-      - гарантируем наличие всех колонок
-      - лишние поля оставляем (pandas их тоже запишет), но базовые фиксируем
+    Буферизированный writer для CSV.
+
+    Как работает:
+        - add(record): добавляет строку в память
+        - при достижении flush_every → автоматически пишет пачку на диск
+        - close(): принудительно сбрасывает остаток и закрывает файл
+
+    Почему так:
+        - запись на диск по одной строке часто даёт ощутимый overhead
+        - буфер помогает уменьшить число IO операций
     """
-    out: Dict[str, Any] = {}
-    for col in _COLUMNS:
-        out[col] = rec.get(col, "")
 
-    # если появились новые поля — тоже добавим, чтобы ничего не потерять
-    for k, v in rec.items():
-        if k not in out:
-            out[k] = v
+    path: Path
+    fieldnames: List[str]
+    flush_every: int = 500
 
-    return out
+    _buffer: List[Dict[str, Any]] = field(default_factory=list)
+    _file: Optional[Any] = None
+    _writer: Optional[csv.DictWriter] = None
+    _wrote_header: bool = False
 
+    def open(self) -> None:
+        """Открывает файл и готовит DictWriter."""
+        _ensure_parent(self.path)
 
-def write_records_csv(out_dir: Path, records: List[Dict[str, Any]]) -> Optional[Path]:
-    """
-    Записывает общий CSV со всеми структурами.
+        # newline="" важно для csv в Windows/macOS, чтобы не было пустых строк
+        self._file = self.path.open("a", encoding="utf-8", newline="")
+        self._writer = csv.DictWriter(self._file, fieldnames=self.fieldnames)
+        self._writer.writeheader()
+        self._wrote_header = True
 
-    Путь:
-        <out_dir>/all_structures.csv
+    def add(self, record: Dict[str, Any]) -> None:
+        """
+        Добавляет одну запись в буфер.
 
-    Возвращает:
-        Path до CSV или None, если records пустой.
-    """
-    if not records:
-        return None
+        Если буфер достиг flush_every — сбрасываем на диск.
+        """
+        if self._writer is None or self._file is None:
+            self.open()
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+        self._buffer.append(record)
 
-    normalized = [_normalize_record(r) for r in records]
-    df = pd.DataFrame(normalized)
+        if len(self._buffer) >= self.flush_every:
+            self.flush()
 
-    # Пытаемся сохранить базовый порядок колонок, но не ломаемся, если есть новые.
-    cols = [c for c in _COLUMNS if c in df.columns] + [
-        c for c in df.columns if c not in _COLUMNS
-    ]
-    df = df[cols]
+    def flush(self) -> None:
+        """Записывает текущий буфер в файл и очищает его."""
+        if not self._buffer:
+            return
 
-    path = out_dir / "all_structures.csv"
-    df.to_csv(path, index=False)
+        if self._writer is None or self._file is None:
+            # теоретически не должно происходить, но пусть будет безопасно
+            self.open()
 
-    return path
+        assert self._writer is not None
+        self._writer.writerows(self._buffer)
+        self._buffer.clear()
+
+        # Чтобы данные реально оказались на диске (полезно на долгих прогонах)
+        assert self._file is not None
+        self._file.flush()
+
+    def close(self) -> None:
+        """Сбрасывает остаток и закрывает файл."""
+        try:
+            self.flush()
+        finally:
+            if self._file is not None:
+                self._file.close()
+            self._file = None
+            self._writer = None
+
+    def __enter__(self) -> BufferedCSVWriter:
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()

@@ -1,74 +1,54 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Set, Tuple
+
 import pandas as pd
-from pymatgen.core import Structure
+
+TrainKey = Tuple[str, str]  # (reduced_formula, spacegroup)
 
 
-def is_novel(struct: Structure, reference_df: pd.DataFrame) -> bool:
+@dataclass(frozen=True)
+class TrainReferenceIndex:
     """
-    Проверяет, является ли структура новой относительно train_reference.csv.
+    Быстрый индекс train_reference.csv.
 
-    Структура считается НЕ новой (not novel), если в train_reference.csv уже
-    существует структура с той же:
-        - reduced_formula
-        - spacegroup
-
-    Это используется для оценки способности генеративной модели создавать
-    новые структуры, а не просто воспроизводить train dataset.
-
-    Почему используется именно (formula, spacegroup):
-        reduced_formula
-            Нормализованный химический состав (например Fe4O6 → Fe2O3)
-
-        spacegroup
-            Определяет симметрию структуры. Одинаковая формула может иметь
-            разные структуры, поэтому spacegroup необходим для различения.
-
-    Пример:
-
-        train_reference.csv:
-            Fe2O3,167
-
-        generated:
-            Fe2O3,167  → not novel
-            Fe2O3,62   → novel
-            NiO,225    → novel
-
-    Parameters
-    ----------
-    struct : Structure
-        Структура pymatgen, которую нужно проверить.
-
-    reference_df : pd.DataFrame
-        DataFrame, загруженный из train_reference.csv.
-        Должен содержать столбцы:
-            - reduced_formula
-            - spacegroup
-
-        Если None или пустой → все структуры считаются новыми.
-
-    Returns
-    -------
-    bool
-        True  → структура новая (novel)
-        False → структура уже есть в train dataset (not novel)
+    Храним set пар (reduced_formula, spacegroup) как строки,
+    чтобы novelty-check был O(1), без pandas-фильтров на каждый CIF.
     """
 
-    # Если reference dataset не предоставлен — считаем всё новым
-    if reference_df is None or reference_df.empty:
-        return True
+    keys: Set[TrainKey]
 
-    # Получаем нормализованную формулу
-    formula = struct.composition.reduced_formula
+    @classmethod
+    def from_csv(cls, path: Path) -> TrainReferenceIndex:
+        df = pd.read_csv(path)
 
-    # Получаем номер spacegroup
-    sg_number = struct.get_space_group_info()[1]
+        # Нормализуем типы
+        if "reduced_formula" not in df.columns:
+            raise ValueError(
+                "train_reference.csv должен содержать столбец reduced_formula"
+            )
 
-    # Ищем совпадение в reference dataset
-    match = reference_df[
-        (reference_df["reduced_formula"] == formula)
-        & (reference_df["spacegroup"].astype(str) == str(sg_number))
-    ]
+        if "spacegroup" not in df.columns:
+            # spacegroup опционален по ТЗ → тогда novelty будем считать только по формуле
+            # но для простоты храним spacegroup как пустую строку
+            df["spacegroup"] = ""
 
-    # Если совпадений нет → структура новая
-    return match.empty
+        df["reduced_formula"] = df["reduced_formula"].astype(str)
+        df["spacegroup"] = df["spacegroup"].astype(str)
+
+        keys: Set[TrainKey] = set(zip(df["reduced_formula"], df["spacegroup"]))
+        return cls(keys=keys)
+
+
+def load_train_reference(path: Optional[Path]) -> Optional[TrainReferenceIndex]:
+    """
+    Безопасная загрузка индекса.
+    Возвращает None, если path не задан или файла нет.
+    """
+    if path is None:
+        return None
+    if not path.exists():
+        return None
+    return TrainReferenceIndex.from_csv(path)
