@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+import warnings
 from pymatgen.core import Structure
 
 
@@ -35,4 +36,10 @@ def read_structure(path: Path) -> Structure:
         Ошибка должна обрабатываться на уровне pipeline.runner,
         где структура будет помечена как rejected с причиной cif_parse_error.
     """
-    return Structure.from_file(path)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*fractional coordinates rounded to ideal values.*",
+            category=UserWarning,
+        )
+        return Structure.from_file(path)
