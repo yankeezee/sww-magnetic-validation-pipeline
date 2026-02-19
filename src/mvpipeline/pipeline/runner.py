@@ -39,7 +39,7 @@ from pymatgen.core import Structure
 from ..analysis import compute_basic_descriptors, get_spacegroup_number
 from ..dedup import SimilarityChecker
 from ..io import discover_cifs, read_structure, write_rejected, write_validated
-from ..novelty import is_novel
+from ..novelty import load_train_reference, is_novel
 from ..report import write_records_csv
 from ..utils import (
     PipelineConfig,
@@ -108,36 +108,6 @@ class RunStats:
 
         key = reason.value
         self.rejection_reasons[key] = self.rejection_reasons.get(key, 0) + 1
-
-
-# =============================================================================
-# Вспомогательная функция: загрузка train_reference.csv
-# =============================================================================
-
-
-def _load_train_reference(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    """
-    Загружает train_reference.csv, если он существует.
-
-    Этот файл нужен для проверки новизны структуры.
-    """
-
-    if path is None:
-        return None
-
-    if not path.exists():
-        return None
-
-    df = pd.read_csv(path)
-
-    # приводим к строкам, чтобы сравнение работало корректно
-    if "reduced_formula" in df.columns:
-        df["reduced_formula"] = df["reduced_formula"].astype(str)
-
-    if "spacegroup" in df.columns:
-        df["spacegroup"] = df["spacegroup"].astype(str)
-
-    return df
 
 
 # =============================================================================
@@ -294,7 +264,7 @@ def run_validation(
     items = discover_cifs(input_dir)
 
     # загружаем train_reference.csv
-    reference_df = _load_train_reference(train_reference)
+    reference = load_train_reference(train_reference)
 
     # создаем объект статистики
     stats = RunStats(total=len(items))
@@ -412,7 +382,12 @@ def run_validation(
         # 7. проверяем новизну
         # ------------------------------------------------------------
 
-        novel = is_novel(struct, reference_df) if reference_df is not None else None
+        novel = is_novel(
+            struct,
+            reference,
+            reduced_formula=desc.reduced_formula,
+            spacegroup=desc.spacegroup,
+        )
 
         # ------------------------------------------------------------
         # 8. проверяем дубликаты
