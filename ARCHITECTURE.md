@@ -14,6 +14,17 @@
 
 ---
 
+## `scripts/` — вспомогательные скрипты запуска
+
+### `scripts/run_validation.sh`
+
+Запускает валидацию для набора моделей (MatterGen / Con-CDVAE / CrystalFormer и т.д.).
+
+### `scripts/run_docker.sh`
+
+Запускает тот же `scripts/run_validation.sh`, но внутри Docker.
+
+
 ## `cli.py`
 
 CLI-интерфейс. Здесь определяется команда:
