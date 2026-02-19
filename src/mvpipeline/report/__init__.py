@@ -2,14 +2,13 @@
 Report module: формирование артефактов анализа.
 
 Отвечает за:
-    - запись общего CSV по всем CIF (all_structures.csv)
+    - запись общего CSV со всеми структурами (all_structures.csv)
+    - (при желании) будущие графики/агрегации/таблицы
 
 Публичный API:
-    write_records_csv
+    BufferedCSVWriter
 """
 
-from .records import write_records_csv
+from .records import BufferedCSVWriter
 
-__all__ = [
-    "write_records_csv",
-]
+__all__ = ["BufferedCSVWriter"]
