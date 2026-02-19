@@ -30,8 +30,10 @@ def validate(
     input_dir: Path = typer.Option(
         ..., "--input-dir", help="Папка с CIF файлами (рекурсивно ищем *.cif)"
     ),
-    out_dir: Path = typer.Option(
-        ..., "--out-dir", help="Куда сохранять результаты (validated/rejected + report)"
+    out_dir: Optional[Path] = typer.Option(
+        None,
+        "--out-dir",
+        help="Куда сохранять результаты (по умолчанию: outputs/<model_name>)",
     ),
     thresholds: Optional[Path] = typer.Option(
         None,
@@ -69,7 +71,20 @@ def validate(
         raise typer.BadParameter(f"input-dir должен быть директорией: {input_dir}")
 
     # ------------------------------------------------------------
-    # 2) thresholds: warning если нет
+    # 2) Определяем model_name и out_dir по умолчанию
+    # ------------------------------------------------------------
+
+    if model_name is None:
+        # Берем имя папки: samples/mattergen_cifs -> mattergen_cifs
+        model_name = input_dir.name
+
+    if out_dir is None:
+        # Дефолт: outputs/<model_name>
+        out_dir = Path("outputs") / model_name
+        print(f"[yellow]⚠ out-dir не указан, используется: {out_dir}[/yellow]")
+
+    # ------------------------------------------------------------
+    # 3) thresholds: warning если нет
     # ------------------------------------------------------------
 
     if thresholds is None:
@@ -89,7 +104,7 @@ def validate(
         cfg = load_config(thresholds)
 
     # ------------------------------------------------------------
-    # 3) train_reference: warning если нет
+    # 4) train_reference: warning если нет
     # ------------------------------------------------------------
 
     if train_reference is None:
@@ -105,7 +120,7 @@ def validate(
         train_reference = None
 
     # ------------------------------------------------------------
-    # 4) запуск pipeline
+    # 5) запуск pipeline
     # ------------------------------------------------------------
 
     report = run_validation(
@@ -117,7 +132,7 @@ def validate(
     )
 
     # ------------------------------------------------------------
-    # 5) вывод результата
+    # 6) вывод результата
     # ------------------------------------------------------------
 
     print(

@@ -40,6 +40,7 @@ from ..analysis import compute_basic_descriptors, get_spacegroup_number
 from ..dedup import SimilarityChecker
 from ..io import discover_cifs, read_structure, write_rejected, write_validated
 from ..novelty import is_novel
+from ..report import write_records_csv
 from ..utils import (
     PipelineConfig,
     Rejection,
@@ -93,8 +94,8 @@ class RunStats:
     # причины отклонения (словарь: причина -> сколько раз)
     rejection_reasons: Dict[str, int] = field(default_factory=dict)
 
-    # строки для validated_progress.csv
-    progress_rows: list[dict[str, Any]] = field(default_factory=list)
+    # Общая таблица для анализа (all_structures.csv)
+    records_rows: list[dict[str, Any]] = field(default_factory=list)
 
     def add_rejection_reason(self, reason: RejectionReason) -> None:
         """
@@ -155,6 +156,103 @@ def _avg(values: list[float]) -> float:
         return 0.0
 
     return sum(values) / len(values)
+
+
+# =============================================================================
+# Вспомогательная функция: формирование записи для общего CSV
+# =============================================================================
+
+
+def _make_record(
+    *,
+    item: Any,
+    result: ValidationResult,
+    geo_details: Optional[Dict[str, Any]] = None,
+    charge_solution: Optional[Dict[str, int]] = None,
+) -> Dict[str, Any]:
+    """
+    Формирует одну строку для общего CSV (all_structures.csv).
+
+    Что мы кладём в отдельные колонки (самое важное для анализа):
+        - идентификатор файла (structure_id) и путь до CIF (input_path)
+        - финальный статус (validated / rejected)
+        - причина отклонения (rejection_reason), если rejected
+        - флаги: suspicious / duplicate / novel / magnetic
+        - базовые дескрипторы (если они есть): n_atoms, density, volume_per_atom,
+          reduced_formula, spacegroup
+        - min_distance (минимальная межатомная дистанция) — один из ключевых сигналов,
+          почему структура может быть плохой
+
+    Откуда берём min_distance:
+        1) в первую очередь из geo_details (потому что geo проверка выполнялась почти всегда
+           и там min_distance посчитан одинаково и для валидных, и для rejected)
+        2) если geo_details не передали (или там нет поля), пробуем взять из
+           result.rejection.details (иногда туда может попасть)
+
+    Про charge_solution_json:
+        - если при проверке электронейтральности удалось подобрать степени окисления,
+          мы сохраняем “решение” как JSON: {"Fe": 3, "O": -2, ...}
+        - это полезно для отладки: видно, “как именно” сошёлся заряд.
+
+    Про details_json:
+        - сюда складываем структурированные детали:
+            {
+              "geometry": {...},
+              "rejection_details": {...}
+            }
+        - это страховка на будущее: если позже понадобится новое поле
+          (например, thresholds, плотность до округления, и т.п.) — его можно
+          положить в details_json, не ломая схему CSV.
+
+    Возвращает:
+        dict[str, Any] — готовую запись (строку) для добавления в общий список records_rows.
+    """
+    desc = result.descriptors
+
+    # min_distance лучше брать из geo_details (есть и для validated, и для rejected по геометрии)
+    min_distance = ""
+    if geo_details and "min_distance" in geo_details:
+        min_distance = geo_details.get("min_distance", "")
+    elif result.rejection and result.rejection.details:
+        min_distance = result.rejection.details.get("min_distance", "")
+
+    # Собираем “сырые” детали — одной структурой, чтобы потом не потерять контекст.
+    details_payload: dict[str, Any] = {}
+    if geo_details:
+        details_payload["geometry"] = geo_details
+    if result.rejection:
+        details_payload["rejection_details"] = result.rejection.details
+
+    # Основная “плоская” строка CSV
+    record = {
+        "structure_id": item.structure_id,
+        "input_path": str(item.path),
+        # статус структуры
+        "status": result.status.value,
+        # причина отклонения (если rejected)
+        "rejection_reason": result.rejection.reason.value if result.rejection else "",
+        # флаги для анализа
+        "is_suspicious": bool(result.is_suspicious),
+        "is_duplicate": bool(result.is_duplicate),
+        "is_novel": "" if result.is_novel is None else bool(result.is_novel),
+        "is_magnetic": bool(result.is_magnetic),
+        # дескрипторы (если они есть)
+        "n_atoms": desc.n_atoms if desc else "",
+        "density": desc.density if desc else "",
+        "volume_per_atom": desc.volume_per_atom if desc else "",
+        "reduced_formula": desc.reduced_formula if desc else "",
+        "spacegroup": desc.spacegroup if desc else "",
+        # ключевая геометрическая метрика
+        "min_distance": min_distance,
+        # решение по степеням окисления (если нашли)
+        "charge_solution_json": (
+            json.dumps(charge_solution, ensure_ascii=False) if charge_solution else ""
+        ),
+        # “мешок” для всех деталей в JSON
+        "details_json": json.dumps(details_payload, ensure_ascii=False),
+    }
+
+    return record
 
 
 # =============================================================================
@@ -370,6 +468,20 @@ def run_validation(
         stats.densities.append(desc.density)
         stats.vpas.append(desc.volume_per_atom)
 
+        stats.records_rows.append(
+            _make_record(
+                item=item,
+                result=result,
+                geo_details=geo.details,
+                charge_solution=charge.solution,
+            )
+        )
+
+    # =========================================================================
+    # Сохраняем общий CSV (вся логика внутри report/)
+    # =========================================================================
+    csv_path = write_records_csv(out_dir, stats.records_rows)
+
     # =========================================================================
     # Формируем итоговый отчет
     # =========================================================================
@@ -392,6 +504,7 @@ def run_validation(
         "avg_density": _avg(stats.densities),
         "avg_volume_per_atom": _avg(stats.vpas),
         "rejection_reasons": stats.rejection_reasons,
+        "all_structures_csv": str(csv_path) if csv_path else "",
     }
 
     report_path = out_dir / "validation_report.json"

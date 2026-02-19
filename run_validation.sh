@@ -3,41 +3,36 @@
 set -e  # остановить скрипт при любой ошибке
 
 # -----------------------------------------------------------------------------
-# Конфигурация
+# Общая конфигурация
 # -----------------------------------------------------------------------------
 
 THRESHOLDS="config/thresholds.yaml"
-TRAIN_REFERENCE="config/train_reference.csv"
+
+# Список моделей
+MODELS=(
+  "mattergen"
+  "concdvae"
+  "crystalformer"
+)
 
 # -----------------------------------------------------------------------------
 # Запуски
 # -----------------------------------------------------------------------------
 
-echo "=== MatterGen validation ==="
+for MODEL in "${MODELS[@]}"; do
+  echo "=== ${MODEL} validation ==="
 
-mvp \
-  --input-dir samples/mattergen_cifs \
-  --out-dir outputs/mattergen \
-  --train-reference "$TRAIN_REFERENCE" \
-  --thresholds "$THRESHOLDS"
+  INPUT_DIR="samples/${MODEL}_cifs"
+  OUT_DIR="outputs/${MODEL}"
+  TRAIN_REFERENCE="datasets/${MODEL}/train_reference.csv"
 
+  mvp \
+    --input-dir "$INPUT_DIR" \
+    --out-dir "$OUT_DIR" \
+    --train-reference "$TRAIN_REFERENCE" \
+    --thresholds "$THRESHOLDS"
 
-echo "=== Con-CDVAE validation ==="
-
-mvp \
-  --input-dir samples/concdvae_cifs \
-  --out-dir outputs/concdvae \
-  --train-reference "$TRAIN_REFERENCE" \
-  --thresholds "$THRESHOLDS"
-
-
-echo "=== CrystalFormer validation ==="
-
-mvp \
-  --input-dir samples/crystalformer_cifs \
-  --out-dir outputs/crystalformer \
-  --train-reference "$TRAIN_REFERENCE" \
-  --thresholds "$THRESHOLDS"
-
+  echo ""
+done
 
 echo "=== Все проверки завершены ==="
