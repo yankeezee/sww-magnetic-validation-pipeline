@@ -31,7 +31,7 @@ mvpipeline — validation pipeline для кристаллических стр�
 """
 
 # Pipeline runner (главная функция)
-from .pipeline.runner import run_validation
+from .pipeline import run_validation
 
 # Config
 from .utils import PipelineConfig, DedupConfig, load_config
