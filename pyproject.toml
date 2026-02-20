@@ -16,4 +16,5 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [project.scripts]
-mvp = "mvpipeline.cli:app"
+mvp = "cli.app:app"
+
