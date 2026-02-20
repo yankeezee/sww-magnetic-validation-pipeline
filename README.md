@@ -67,6 +67,8 @@ bash scripts/run_docker.sh
 
 ## Быстрый старт
 
+### Через CLI
+
 ```bash
 mvp \
   --input-dir samples/mattergen_cifs \
@@ -87,6 +89,18 @@ mvp \
 | `--pretty / --no-pretty` | ❌ | Красиво печатать итоговый отчёт в консоль (по умолчанию: `--pretty`) |
 
 > **Примечание:** если `--thresholds` или `--train-reference` не указаны, pipeline продолжит работу с предупреждением — `novelty_ratio` не будет рассчитан, а пороги будут взяты из встроенных дефолтов.
+
+### Через Web UI (Streamlit)
+
+```bash
+streamlit run src/ui/app.py
+```
+
+После запуска открой в браузере:
+
+```bash
+http://localhost:8501
+```
 
 ---
 
