@@ -16,5 +16,5 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [project.scripts]
-mvp = "cli:app"
+mvp = "cli.app:app"
 

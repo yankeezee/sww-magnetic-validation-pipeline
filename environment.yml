@@ -11,6 +11,8 @@ dependencies:
   - spglib
   - pymatgen
   - matminer
+  - streamlit
+  - py3Dmol
   - pip:
       - typer
       - rich
