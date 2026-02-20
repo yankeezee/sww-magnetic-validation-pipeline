@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from pymatgen.core import Structure
+from tqdm import tqdm
 
 from ..analysis import compute_basic_descriptors, get_spacegroup_number
 from ..dedup import SimilarityChecker
@@ -324,7 +325,7 @@ def run_validation(
     # Главный цикл — обрабатываем каждый CIF
     # =========================================================================
     try:
-        for item in items:
+        for item in tqdm(items, desc="Валидация CIF", unit="cif"):
 
             # ------------------------------------------------------------
             # 1. Читаем CIF
